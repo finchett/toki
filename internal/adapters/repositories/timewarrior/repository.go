@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -163,8 +164,8 @@ func (r *repository) Save(_ context.Context, activity models.Activity) error {
 
 	// Check if we are updating an existing interval (e.g. stopping it)
 	updated := false
-	for i := len(intervals) - 1; i >= 0; i-- {
-		if intervals[i].Start == newInterval.Start {
+	for i, v := range slices.Backward(intervals) {
+		if v.Start == newInterval.Start {
 			intervals[i] = newInterval
 			updated = true
 			break
@@ -345,7 +346,9 @@ func toTWInterval(a models.Activity) twInterval {
 		iv.End = a.EndTime.UTC().Format(timeLayout)
 	}
 	if a.Project != "" {
-		iv.Tags = []string{a.Project}
+		iv.Tags = append([]string{a.Project}, a.Tags...)
+	} else if len(a.Tags) > 0 {
+		iv.Tags = append([]string(nil), a.Tags...)
 	}
 	return iv
 }
@@ -367,8 +370,12 @@ func fromTWInterval(iv twInterval) (models.Activity, error) {
 	}
 
 	project := ""
+	var tags []string
 	if len(iv.Tags) > 0 {
 		project = iv.Tags[0]
+		if len(iv.Tags) > 1 {
+			tags = append([]string(nil), iv.Tags[1:]...)
+		}
 	}
 
 	return models.Activity{
@@ -376,6 +383,7 @@ func fromTWInterval(iv twInterval) (models.Activity, error) {
 		Description: iv.Annotation,
 		StartTime:   start.Local(),
 		EndTime:     end,
+		Tags:        tags,
 	}, nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/kriuchkov/tock/internal/adapters/repositories/todotxt"
 	"github.com/kriuchkov/tock/internal/app/localization"
 	"github.com/kriuchkov/tock/internal/config"
+	"github.com/kriuchkov/tock/internal/core/models"
 	"github.com/kriuchkov/tock/internal/core/ports"
 	"github.com/kriuchkov/tock/internal/services/activity"
 	"github.com/kriuchkov/tock/internal/timeutil"
@@ -45,6 +46,7 @@ type Runtime struct {
 	Viper           *viper.Viper
 	TimeFormatter   *timeutil.Formatter
 	Localizer       *localization.Localizer
+	TagColors       map[string]models.TagColor
 }
 
 func (rt *Runtime) WithContext(ctx context.Context) context.Context {
@@ -83,7 +85,7 @@ func Load(ctx context.Context, req Request) (*Runtime, error) {
 		return nil, err
 	}
 
-	return &Runtime{
+	rt := &Runtime{
 		ActivityService: activity.NewService(repo, notesRepo),
 		NotesRepository: notesRepo,
 		Backend:         backend,
@@ -92,7 +94,39 @@ func Load(ctx context.Context, req Request) (*Runtime, error) {
 		Viper:           loadedViper,
 		TimeFormatter:   timeutil.NewFormatter(cfg.TimeFormat),
 		Localizer:       loc,
-	}, nil
+		TagColors:       buildTagColors(cfg.Theme.TagColors, backend, filePath, cfg.Timewarrior.ConfigPath),
+	}
+	return rt, nil
+}
+
+// buildTagColors merges per-tag colors from two sources. Config-defined colors
+// are the base; backend-specific colors (e.g. TimeWarrior tags.*.color) are
+// overlaid on top so that the backend's own palette takes precedence.
+// twCfgPath is an optional explicit path to timewarrior.cfg (empty = auto-detect).
+func buildTagColors(cfgColors map[string]string, backend, dataPath, twCfgPath string) map[string]models.TagColor {
+	var result map[string]models.TagColor
+
+	if len(cfgColors) > 0 {
+		result = make(map[string]models.TagColor, len(cfgColors))
+		for tag, color := range cfgColors {
+			if color != "" {
+				result[tag] = models.TagColor{FG: color}
+			}
+		}
+	}
+
+	if backend == backendTimewarrior {
+		twColors := timewarrior.ParseTagColors(dataPath, twCfgPath)
+		if len(twColors) > 0 {
+			if result == nil {
+				result = make(map[string]models.TagColor, len(twColors))
+			}
+			for tag, tc := range twColors {
+				result[tag] = models.TagColor{FG: tc.FG, BG: tc.BG}
+			}
+		}
+	}
+	return result
 }
 
 func (rt *Runtime) DefaultExportDir() (string, error) {
