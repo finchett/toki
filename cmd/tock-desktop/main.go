@@ -9,6 +9,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
 //go:embed all:frontend/dist
@@ -28,6 +29,9 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 229, G: 232, B: 226, A: 1}, // matches --paper
 		OnStartup:        app.startup,
+		Mac: &mac.Options{
+			TitleBar: mac.TitleBarHiddenInset(), // inset traffic lights, no title text
+		},
 		Bind: []interface{}{
 			app,
 		},

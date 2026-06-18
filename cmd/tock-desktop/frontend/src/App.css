@@ -11,6 +11,25 @@
     gap: 2rem;
 }
 
+/* ── Titlebar — draggable strip standing in for hidden OS chrome ──────── */
+
+.titlebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--titlebar-h);
+    --wails-draggable: drag;
+    -webkit-app-region: drag;
+    user-select: none;
+    z-index: 100;
+}
+
+/* Reserve the titlebar's vertical space inside the centered column. */
+.app > .titlebar + * {
+    margin-top: var(--titlebar-h);
+}
+
 /* ── Masthead ─────────────────────────────────────────────────────────── */
 
 .masthead {
@@ -19,6 +38,14 @@
     align-items: baseline;
     padding-bottom: 1.25rem;
     border-bottom: 1px solid var(--rule-strong);
+    --wails-draggable: drag;
+    -webkit-app-region: drag;
+}
+
+.masthead__name,
+.masthead__date {
+    --wails-draggable: no-drag;
+    -webkit-app-region: no-drag;
 }
 
 .masthead__name {

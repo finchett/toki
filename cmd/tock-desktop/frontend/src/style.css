@@ -43,7 +43,8 @@
     /* Rhythm */
     --gutter:       2rem;
     --row-gap:      0.6rem;
-    --window-pad:   2.25rem 2.5rem 2rem;
+    --titlebar-h:   38px;
+    --window-pad:   0 2.5rem 2rem;
 }
 
 html, body {
