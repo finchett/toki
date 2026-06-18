@@ -12,3 +12,11 @@ bin/
 .dev/
 .claude/
 .DS_Store
+
+# Desktop app build artifacts
+/tock
+/tock-desktop
+cmd/tock-desktop/build/bin/
+cmd/tock-desktop/frontend/dist/*
+!cmd/tock-desktop/frontend/dist/.gitkeep
+cmd/tock-desktop/frontend/node_modules/
