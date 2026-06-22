@@ -1,12 +1,18 @@
+//go:build darwin
+
 package main
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"fyne.io/systray"
 	"github.com/go-faster/errors"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/kriuchkov/tock/internal/app/runtime"
 	"github.com/kriuchkov/tock/internal/core/models"
@@ -18,6 +24,9 @@ import (
 type App struct {
 	ctx context.Context
 	rt  *runtime.Runtime
+
+	mu       sync.Mutex
+	trayStop chan struct{}
 }
 
 func NewApp() *App {
@@ -31,6 +40,95 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	a.rt = rt
+}
+
+// trayOnReady builds the status bar menu. Called by systray on the main
+// thread once the NSStatusItem exists. The window-hide path is handled by
+// Wails' HideWindowOnClose at the Cocoa layer, so the tray only needs to
+// surface "show" and "quit" — no toggle state to keep in sync.
+func (a *App) trayOnReady() {
+	systray.SetTitle(" ○")
+	systray.SetTooltip("Toki")
+
+	show := systray.AddMenuItem("Show Toki", "Bring the Toki window to the front")
+	systray.AddSeparator()
+	quit := systray.AddMenuItem("Quit Toki", "Quit Toki")
+
+	a.mu.Lock()
+	a.trayStop = make(chan struct{})
+	stop := a.trayStop
+	a.mu.Unlock()
+
+	go a.trayLoop(show.ClickedCh, quit.ClickedCh, stop)
+}
+
+func (a *App) trayOnExit() {
+	a.mu.Lock()
+	stop := a.trayStop
+	a.trayStop = nil
+	a.mu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
+}
+
+// trayLoop dispatches tray clicks and re-renders the title on each minute
+// boundary so the displayed M:SS flips exactly when it changes value.
+// Mutations (Start/Stop/…) call refreshTrayTitle directly. The loop waits for
+// startup to populate a.ctx before issuing any Wails runtime calls — the tray
+// goroutine and Wails startup race otherwise.
+func (a *App) trayLoop(showCh, quitCh <-chan struct{}, stop <-chan struct{}) {
+	for a.ctx == nil {
+		select {
+		case <-stop:
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	a.refreshTrayTitle()
+	nextMinute := func() time.Duration {
+		return time.Until(time.Now().Truncate(time.Minute).Add(time.Minute))
+	}
+	timer := time.NewTimer(nextMinute())
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+			a.refreshTrayTitle()
+			timer.Reset(nextMinute())
+		case <-showCh:
+			wailsruntime.WindowShow(a.ctx)
+		case <-quitCh:
+			wailsruntime.Quit(a.ctx)
+			return
+		}
+	}
+}
+
+func (a *App) refreshTrayTitle() {
+	act, err := a.GetRunning()
+	if err != nil || act == nil {
+		systray.SetTitle(" ○")
+		return
+	}
+	systray.SetTitle(" ● " + formatElapsed(time.Since(act.StartTime)))
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	mins := int(d.Minutes())
+	h := mins / 60
+	m := mins % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d", h, m)
+	}
+	return fmt.Sprintf("0:%02d", m)
 }
 
 func (a *App) requireRuntime() error {
@@ -90,10 +188,14 @@ func (a *App) Start(description, project string) (*models.Activity, error) {
 	if description == "" {
 		return nil, errors.New("describe what you're working on")
 	}
-	return a.rt.ActivityService.Start(a.ctx, models.StartActivityRequest{
+	act, err := a.rt.ActivityService.Start(a.ctx, models.StartActivityRequest{
 		Description: description,
 		Project:     strings.TrimSpace(project),
 	})
+	if err == nil {
+		a.refreshTrayTitle()
+	}
+	return act, err
 }
 
 // StartAt begins a new activity with an explicit start time — for when the
@@ -113,11 +215,15 @@ func (a *App) StartAt(description, project, startISO string) (*models.Activity, 
 	if start.After(time.Now()) {
 		return nil, errors.New("start time must be in the past")
 	}
-	return a.rt.ActivityService.Start(a.ctx, models.StartActivityRequest{
+	act, err := a.rt.ActivityService.Start(a.ctx, models.StartActivityRequest{
 		Description: description,
 		Project:     strings.TrimSpace(project),
 		StartTime:   start,
 	})
+	if err == nil {
+		a.refreshTrayTitle()
+	}
+	return act, err
 }
 
 // AddActivity creates a completed activity with arbitrary start and end times —
@@ -154,7 +260,11 @@ func (a *App) Stop() (*models.Activity, error) {
 	if err := a.requireRuntime(); err != nil {
 		return nil, err
 	}
-	return a.rt.ActivityService.Stop(a.ctx, models.StopActivityRequest{})
+	act, err := a.rt.ActivityService.Stop(a.ctx, models.StopActivityRequest{})
+	if err == nil {
+		a.refreshTrayTitle()
+	}
+	return act, err
 }
 
 // UpdateActivity edits an existing activity. Description and project change
@@ -207,6 +317,7 @@ func (a *App) UpdateActivity(orig models.Activity, description, project, startIS
 	if err := a.rt.ActivityRepo.Save(a.ctx, updated); err != nil {
 		return nil, err
 	}
+	a.refreshTrayTitle()
 	return &updated, nil
 }
 
@@ -215,7 +326,11 @@ func (a *App) RemoveActivity(orig models.Activity) error {
 	if err := a.requireRuntime(); err != nil {
 		return err
 	}
-	return a.rt.ActivityService.Remove(a.ctx, orig)
+	if err := a.rt.ActivityService.Remove(a.ctx, orig); err != nil {
+		return err
+	}
+	a.refreshTrayTitle()
+	return nil
 }
 
 // ListRecent returns up to `limit` activities, newest start time first,

@@ -30,5 +30,6 @@ All upstream copyright notices are preserved unchanged.
 
 ## Upstream README
 
-See [`README.md`](README.md) for tock's own documentation. That file is
-kept verbatim from upstream so merges stay friction-free.
+Tock's own README is preserved verbatim at [`docs/tock.md`](docs/tock.md) so
+merges from upstream stay friction-free. The top-level [`README.md`](README.md)
+documents Toki itself.

@@ -16,6 +16,7 @@ bin/
 # Desktop app build artifacts
 /tock
 /tock-desktop
+cmd/tock-desktop/tock-desktop
 cmd/tock-desktop/build/bin/
 cmd/tock-desktop/frontend/dist/*
 !cmd/tock-desktop/frontend/dist/.gitkeep

@@ -6,51 +6,88 @@ on:
       - 'v*'
 
 jobs:
-  build:
-    name: Build macOS
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            output_name: janus-darwin-amd64
-          - arch: arm64
-            output_name: janus-darwin-arm64
-    steps:
-      - uses: actions/checkout@v6
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: "go.mod"
-      - name: Build
-        env:
-          GOOS: darwin
-          GOARCH: ${{ matrix.arch }}
-        run: go build -o ${{ matrix.output_name }} ./cmd/tock
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.output_name }}
-          path: ${{ matrix.output_name }}
-
-  release:
-    name: Release
-    runs-on: ubuntu-latest
+  build-macos:
+    name: Build Toki.app (macOS universal)
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v6
+          go-version-file: 'go.mod'
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
         with:
-          go-version-file: "go.mod"
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cmd/tock-desktop/frontend/package-lock.json
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Stamp version from tag into wails.json
+        # The tag is like "v0.1.0"; Wails wants a bare version string in the
+        # productVersion field, which gets baked into Info.plist.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Building Toki ${VERSION}"
+          # macOS sed needs an empty backup arg; -i '' is portable on darwin.
+          sed -i '' -E "s/\"productVersion\": *\"[^\"]*\"/\"productVersion\": \"${VERSION}\"/" cmd/tock-desktop/wails.json
+          grep productVersion cmd/tock-desktop/wails.json
+
+      - name: Build universal .app
+        working-directory: cmd/tock-desktop
+        run: wails build -clean -platform darwin/universal
+
+      - name: Rename bundle to Toki.app
+        run: |
+          cd cmd/tock-desktop/build/bin
+          if [ -d tock-desktop.app ]; then
+            rm -rf Toki.app
+            mv tock-desktop.app Toki.app
+          fi
+          ls -la
+
+      - name: Zip Toki.app
+        run: |
+          cd cmd/tock-desktop/build/bin
+          ASSET="Toki-${GITHUB_REF_NAME}-macos-universal.zip"
+          # `ditto` preserves macOS bundle attributes (resource forks,
+          # extended attrs) better than plain `zip`.
+          ditto -c -k --sequesterRsrc --keepParent Toki.app "$ASSET"
+          shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          ls -la
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          name: Toki ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            cmd/tock-desktop/build/bin/Toki-${{ github.ref_name }}-macos-universal.zip
+            cmd/tock-desktop/build/bin/Toki-${{ github.ref_name }}-macos-universal.zip.sha256
+          body: |
+            ## Install
+
+            ### One-liner
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/finchett/toki/main/install.sh | sh
+            ```
+
+            ### Manual
+
+            1. Download `Toki-${{ github.ref_name }}-macos-universal.zip` below.
+            2. Unzip and drag `Toki.app` into `/Applications`.
+            3. First launch: right-click → **Open** → **Open**, or
+               `xattr -dr com.apple.quarantine /Applications/Toki.app`.
+
+            Toki releases are not yet signed with an Apple Developer ID;
+            see the [README](https://github.com/finchett/toki#install) for
+            details.

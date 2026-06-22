@@ -1,19 +1,47 @@
-# README
+# Toki desktop
 
-## About
+Wails (Go + WebKit) shell wrapping the Toki time tracker, with a React + TypeScript frontend.
 
-This is the official Wails React-TS template.
+## Prerequisites
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+- macOS 11+ (Big Sur or newer)
+- Go (matching the version in `go.mod`)
+- Node.js 18+
+- Wails CLI:
 
-## Live Development
+  ```sh
+  go install github.com/wailsapp/wails/v2/cmd/wails@latest
+  ```
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+  Ensure `$(go env GOPATH)/bin` is on your `PATH`. Run `wails doctor` (or `make desktop-doctor` from the repo root) to verify the toolchain.
 
-## Building
+## Build
 
-To build a redistributable, production mode package, use `wails build`.
+From the repo root:
+
+```sh
+make desktop-build              # host architecture, ~7s incremental
+make desktop-build-universal    # arm64 + amd64 fat binary
+make desktop-run                # build, then `open Toki.app`
+```
+
+The packaged app lands at `cmd/tock-desktop/build/bin/Toki.app` (rename happens after Wails packaging because Wails derives the bundle directory from the project name).
+
+## Develop
+
+```sh
+make desktop-dev
+```
+
+Runs `wails dev` with Vite hot reload. Go methods are reachable from a browser at <http://localhost:34115> for direct devtools poking.
+
+## Menu bar
+
+Toki lives in the macOS menu bar while it's running. The status item shows `●`
+plus the elapsed time of the running activity (or `○` when nothing is tracked).
+Closing the window leaves Toki in the menu bar — click **Show Toki** there to
+bring the window back, or **Quit Toki** to fully exit.
+
+## Configuration
+
+App identity (bundle id, version, copyright) lives in `wails.json` under the `info` block, with platform-specific overrides in `build/darwin/Info.plist` (and `Info.dev.plist` for `wails dev`).

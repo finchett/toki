@@ -19,7 +19,42 @@ build:
 	-v $$(go env GOMODCACHE):/.cache/mod -e GOMODCACHE=/.cache/mod \
 	--entrypoint "" golang:1.26.3 sh -c "go build -o tock ./cmd/tock"
 
-# Refresh test data by running the script that generates it. 
-# By default, it refreshes data for the last 1 day, 
+# Refresh test data by running the script that generates it.
+# By default, it refreshes data for the last 1 day,
 refresh-test-data:
 	python3 scripts/refresh_test_data.py --days $(or $(DAYS),1)
+
+# ── Desktop app (Wails) ──────────────────────────────────────────────────
+# These targets run on the host (Wails can't cross-compile macOS in Docker).
+# Install the CLI first:  go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+WAILS ?= wails
+DESKTOP_DIR := cmd/tock-desktop
+
+# Build a .app for the host architecture (fastest).
+desktop-build:
+	cd $(DESKTOP_DIR) && $(WAILS) build -clean
+	@rm -rf $(DESKTOP_DIR)/build/bin/Toki.app
+	@mv $(DESKTOP_DIR)/build/bin/tock-desktop.app $(DESKTOP_DIR)/build/bin/Toki.app
+	@echo "Built $(DESKTOP_DIR)/build/bin/Toki.app"
+
+# Build a universal (arm64 + amd64) .app suitable for distribution.
+desktop-build-universal:
+	cd $(DESKTOP_DIR) && $(WAILS) build -clean -platform darwin/universal
+	@rm -rf $(DESKTOP_DIR)/build/bin/Toki.app
+	@mv $(DESKTOP_DIR)/build/bin/tock-desktop.app $(DESKTOP_DIR)/build/bin/Toki.app
+	@echo "Built $(DESKTOP_DIR)/build/bin/Toki.app"
+
+# Build and open the resulting .app.
+desktop-run: desktop-build
+	open $(DESKTOP_DIR)/build/bin/Toki.app
+
+# Live-reload dev server with Go bindings exposed at http://localhost:34115.
+desktop-dev:
+	cd $(DESKTOP_DIR) && $(WAILS) dev
+
+# Check that the Wails CLI and its prerequisites are installed.
+desktop-doctor:
+	cd $(DESKTOP_DIR) && $(WAILS) doctor
+
+.PHONY: desktop-build desktop-build-universal desktop-run desktop-dev desktop-doctor
