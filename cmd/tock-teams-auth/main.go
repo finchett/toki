@@ -7,8 +7,11 @@
 // macOS run-loop in its own process so it doesn't fight with Wails' webview,
 // prints the captured redirect URL to stdout, and exits.
 //
-// Usage: tock-teams-auth <auth-url>
+// Usage: tock-teams-auth [--silent] <auth-url>
 //
+//	--silent  run with no visible window or Dock icon, give AAD ~15s to
+//	          complete a prompt=none redirect, then exit. Used for silent
+//	          re-auth via the persistent WKWebView cookie jar.
 //	auth-url  the full Microsoft authorize URL the parent has built (with
 //	          PKCE challenge, state, etc. already baked in)
 //
@@ -16,7 +19,8 @@
 //
 //	0 success — captured redirect URL printed to stdout
 //	1 invocation error (bad args)
-//	2 user closed the window before completing sign-in
+//	2 user closed the window before completing sign-in (interactive) or
+//	  silent attempt timed out without a redirect
 package main
 
 import (
@@ -24,6 +28,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	webview "github.com/webview/webview_go"
 )
@@ -31,21 +36,45 @@ import (
 const redirectPrefix = "https://teams.microsoft.com/go"
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: tock-teams-auth <auth-url>")
+	args := os.Args[1:]
+	silent := false
+	if len(args) > 0 && args[0] == "--silent" {
+		silent = true
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: tock-teams-auth [--silent] <auth-url>")
 		os.Exit(1)
 	}
-	loginURL := os.Args[1]
+	loginURL := args[0]
+
+	if silent {
+		// Suppress the Dock icon for the background refresh. Must run before
+		// the WKWebView is built — webview.New() finalizes the NSApplication.
+		makeAccessory()
+	}
 
 	w := webview.New(false)
 	defer w.Destroy()
 	w.SetTitle("Sign in to Microsoft Teams")
 	w.SetSize(900, 720, webview.HintNone)
 
-	// Without an Edit menu attached to NSApp, Cmd+V never makes it to the
-	// WKWebView's focused text field. webview_go creates the NSApplication
-	// but no menu; we attach one here.
-	installEditMenu()
+	if !silent {
+		// Without an Edit menu attached to NSApp, Cmd+V never makes it to the
+		// WKWebView's focused text field. webview_go creates the NSApplication
+		// but no menu; we attach one here.
+		installEditMenu()
+	} else {
+		// Hide the WKWebView's host window. The WKWebView keeps running and
+		// follows redirects; only the on-screen NSWindow is suppressed.
+		hideWindow(w.Window())
+		// AAD's prompt=none either redirects within a second or two, or never
+		// (network failure). Cap the wait so we don't pin a subprocess forever.
+		go func() {
+			time.Sleep(15 * time.Second)
+			w.Terminate()
+		}()
+	}
 
 	var (
 		mu       sync.Mutex

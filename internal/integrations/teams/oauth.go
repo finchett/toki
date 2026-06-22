@@ -66,7 +66,12 @@ func resourceFor(aud Audience) (string, error) {
 // the URL plus the PKCE verifier the caller must keep until the code comes
 // back. tenantID is "common" until we've discovered the user's actual tenant
 // from a successful sign-in.
-func BuildAuthURL(aud Audience, tenantID string) (string, string, error) {
+//
+// When silent is true, prompt=none is added so AAD will either redirect
+// immediately using the session cookies present in the WKWebView, or bounce
+// back with an interaction_required error. The caller must be ready to fall
+// back to an interactive sign-in in the latter case.
+func BuildAuthURL(aud Audience, tenantID string, silent bool) (string, string, error) {
 	if tenantID == "" {
 		tenantID = "common"
 	}
@@ -110,6 +115,9 @@ func BuildAuthURL(aud Audience, tenantID string) (string, string, error) {
 	q.Set("x-client-Ver", "1.0.9")
 	q.Set("code_challenge", pkceChallenge(verifier))
 	q.Set("code_challenge_method", "S256")
+	if silent {
+		q.Set("prompt", "none")
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), verifier, nil
 }

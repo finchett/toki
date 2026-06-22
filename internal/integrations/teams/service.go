@@ -101,11 +101,11 @@ func (s *Service) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	authURL, verifier, err := BuildAuthURL(AudiencePresence, "common")
+	authURL, verifier, err := BuildAuthURL(AudiencePresence, "common", false)
 	if err != nil {
 		return gerrors.Wrap(err, "build auth url")
 	}
-	raw, err := runHelper(ctx, helper, authURL)
+	raw, err := runHelper(ctx, helper, authURL, false)
 	if err != nil {
 		return gerrors.Wrap(err, "sign-in")
 	}
@@ -163,9 +163,13 @@ func helperPath() (string, error) {
 	return "", gerrors.Errorf("tock-teams-auth helper not found; run `make teams-auth-build` (looked in %v)", candidates)
 }
 
-func runHelper(ctx context.Context, bin, authURL string) (string, error) {
+func runHelper(ctx context.Context, bin, authURL string, silent bool) (string, error) {
+	args := []string{authURL}
+	if silent {
+		args = []string{"--silent", authURL}
+	}
 	// bin is resolved by helperPath() from a fixed search list, not user input.
-	cmd := exec.CommandContext(ctx, bin, authURL) //nolint:gosec // G204
+	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // G204
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -265,9 +269,18 @@ func (s *Service) PushActivityStatus(ctx context.Context, description, project s
 	return s.http.PublishNote(ctx, accessToken, description, time.Now().Add(24*time.Hour))
 }
 
-// accessToken returns a live access token, refreshing via the stored refresh
-// token if the cached one is expired (or within 60s of expiry). Serialized so
-// two concurrent pushes don't burn two refresh round-trips.
+// accessToken returns a live access token. Two upgrade paths when the cached
+// access token is expired or near expiry:
+//
+//  1. Refresh-token grant. SPA refresh tokens cap at ~24h absolute lifetime,
+//     so this covers "Toki was closed overnight" but not "Toki sat idle for
+//     a weekend".
+//  2. Silent re-auth via the helper with prompt=none. Reuses the persistent
+//     WKWebView cookie jar from the prior interactive sign-in; the
+//     login.microsoftonline.com session cookies last days to weeks
+//     depending on tenant policy.
+//
+// Serialized so concurrent pushes don't burn two refresh round-trips.
 func (s *Service) accessToken(ctx context.Context) (string, error) {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
@@ -279,21 +292,52 @@ func (s *Service) accessToken(ctx context.Context) (string, error) {
 	if tok.ExpiresAt > time.Now().Add(60*time.Second).Unix() {
 		return tok.AccessToken, nil
 	}
-	if tok.RefreshToken == "" {
-		return "", gerrors.New("access token expired and no refresh token available — reconnect required")
-	}
 	tenant := "common"
 	if claims, derr := decodeClaims(tok.AccessToken); derr == nil && claims.TenantID != "" {
 		tenant = claims.TenantID
 	}
-	next, err := RefreshTokens(ctx, s.tokenHTTP, tenant, tok.RefreshToken, AudiencePresence)
+	if tok.RefreshToken != "" {
+		next, rerr := RefreshTokens(ctx, s.tokenHTTP, tenant, tok.RefreshToken, AudiencePresence)
+		if rerr == nil {
+			if serr := s.saveTokens(ctx, next); serr != nil {
+				return "", gerrors.Wrap(serr, "persist refreshed tokens")
+			}
+			return next.AccessToken, nil
+		}
+		// Refresh token rejected (typically expired past the SPA 24h cap).
+		// Fall through to silent re-auth.
+	}
+	next, err := s.silentReauth(ctx, tenant)
 	if err != nil {
-		return "", gerrors.Wrap(err, "refresh tokens")
+		return "", gerrors.Wrap(err, "silent reauth (reconnect required)")
 	}
 	if err := s.saveTokens(ctx, next); err != nil {
-		return "", gerrors.Wrap(err, "persist refreshed tokens")
+		return "", gerrors.Wrap(err, "persist reauthed tokens")
 	}
 	return next.AccessToken, nil
+}
+
+// silentReauth runs the auth helper with prompt=none in a hidden window and
+// exchanges the resulting code for fresh tokens. Returns an error if AAD
+// requires interaction (in which case the user has to click Connect again).
+func (s *Service) silentReauth(ctx context.Context, tenant string) (TokenSet, error) {
+	helper, err := helperPath()
+	if err != nil {
+		return TokenSet{}, err
+	}
+	authURL, verifier, err := BuildAuthURL(AudiencePresence, tenant, true)
+	if err != nil {
+		return TokenSet{}, gerrors.Wrap(err, "build silent auth url")
+	}
+	raw, err := runHelper(ctx, helper, authURL, true)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	code, err := ParseRedirect(raw)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	return ExchangeCode(ctx, s.tokenHTTP, tenant, code, verifier, AudiencePresence)
 }
 
 func (s *Service) loadTokens(ctx context.Context) (TokenSet, error) {
