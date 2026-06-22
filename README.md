@@ -63,17 +63,11 @@ open cmd/tock-desktop/build/bin/Toki.app
 ## What it looks like
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="screenshots/Now-Dark.png" />
-    <img src="screenshots/Now-Light.png" alt="Toki — tracking an activity" width="720" />
-  </picture>
+  <img src="screenshots/Now-Light.png" alt="Toki — tracking an activity" width="720" />
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="screenshots/History-Dark.png" />
-    <img src="screenshots/History-Light.png" alt="Toki — activity history" width="720" />
-  </picture>
+  <img src="screenshots/History-Dark.png" alt="Toki — activity history (dark)" width="720" />
 </p>
 
 The menu bar shows `● 0:42` while tracking, `○` when idle. The window has a
