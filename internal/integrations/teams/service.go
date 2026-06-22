@@ -3,7 +3,9 @@ package teams
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,19 +18,20 @@ import (
 )
 
 // Service is the public surface used by the desktop app. It owns the keychain
-// store, the HTTP client, and the cached in-memory settings. All methods are
+// store, the HTTP clients, and the cached in-memory settings. All methods are
 // safe to call from any goroutine.
 //
-// Tokens are loaded from Keychain lazily on first use and re-loaded after a
-// Connect / Disconnect transition. The Skype token (audience) is what we
-// actually need to call presence APIs; the others are kept because the auth
-// dance requires acquiring all three to mirror the Teams web client.
+// Tokens are loaded from Keychain on every call rather than cached in memory:
+// the keychain access is fast and avoids the synchronization headache of a
+// cache that has to be invalidated on Connect / Disconnect / refresh.
 type Service struct {
 	store      *keychainStore
 	http       *httpClient
+	tokenHTTP  *http.Client
 	settings   Settings
 	settingsMu sync.RWMutex
 	path       string
+	refreshMu  sync.Mutex
 }
 
 // Status is the snapshot the frontend renders.
@@ -52,16 +55,18 @@ func NewService() (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		store:    newKeychainStore(),
-		http:     newHTTPClient(),
-		settings: s,
-		path:     path,
+		store:     newKeychainStore(),
+		http:      newHTTPClient(),
+		tokenHTTP: &http.Client{Timeout: 15 * time.Second},
+		settings:  s,
+		path:      path,
 	}, nil
 }
 
 // Status returns the current connection + preference snapshot. Best-effort:
-// Keychain failures are reported as "not connected" rather than surfaced as
-// errors, since the frontend renders this on every settings open.
+// Keychain or token-decode failures are reported as "not connected" rather
+// than surfaced as errors, since the frontend renders this on every settings
+// open.
 func (s *Service) Status() Status {
 	s.settingsMu.RLock()
 	enabled := s.settings.Enabled
@@ -70,18 +75,18 @@ func (s *Service) Status() Status {
 
 	out := Status{Enabled: enabled, TrackedProjects: projects}
 
-	tok, err := s.store.Load(context.Background(), string(AudiencePresence))
+	tok, err := s.loadTokens(context.Background())
 	if err != nil {
 		if errors.Is(err, errNotFound) {
 			out.MissingTokens = []string{string(AudiencePresence)}
 		}
 		return out
 	}
-	if claims, cerr := decodeClaims(tok); cerr == nil {
+	if claims, cerr := decodeClaims(tok.AccessToken); cerr == nil {
 		out.Connected = true
 		out.TenantID = claims.TenantID
 		out.UserUPN = claims.UPN
-		out.Expires = claims.Expires
+		out.Expires = tok.ExpiresAt
 	}
 	return out
 }
@@ -89,43 +94,33 @@ func (s *Service) Status() Status {
 // Connect runs the sign-in flow by spawning the tock-teams-auth helper
 // subprocess. The helper opens a real WKWebView window, drives the
 // Microsoft sign-in, and prints the captured redirect URL to stdout. We
-// parse the URL and write the resulting presence-audience token to
-// Keychain.
+// parse the code out of that URL, exchange it for an access+refresh token
+// pair, and persist the pair to Keychain.
 func (s *Service) Connect(ctx context.Context) error {
 	helper, err := helperPath()
 	if err != nil {
 		return err
 	}
-	raw, err := runHelper(ctx, helper, AudiencePresence, "common")
+	authURL, verifier, err := BuildAuthURL(AudiencePresence, "common")
+	if err != nil {
+		return gerrors.Wrap(err, "build auth url")
+	}
+	raw, err := runHelper(ctx, helper, authURL)
 	if err != nil {
 		return gerrors.Wrap(err, "sign-in")
 	}
-	if _, serr := s.SubmitRedirect(ctx, raw); serr != nil {
-		return gerrors.Wrap(serr, "store token")
+	code, err := ParseRedirect(raw)
+	if err != nil {
+		return gerrors.Wrap(err, "parse redirect")
+	}
+	tokens, err := ExchangeCode(ctx, s.tokenHTTP, "common", code, verifier, AudiencePresence)
+	if err != nil {
+		return gerrors.Wrap(err, "exchange code")
+	}
+	if err := s.saveTokens(ctx, tokens); err != nil {
+		return gerrors.Wrap(err, "persist tokens")
 	}
 	return nil
-}
-
-// SubmitRedirect ingests one redirect URL (typically from the auth helper,
-// but exposed for tests / manual recovery). Identifies the audience via JWT
-// claims and stores the token.
-func (s *Service) SubmitRedirect(ctx context.Context, rawURL string) (string, error) {
-	token, err := ParseRedirect(rawURL)
-	if err != nil {
-		return "", err
-	}
-	claims, err := decodeClaims(token)
-	if err != nil {
-		return "", gerrors.Wrap(err, "decode token")
-	}
-	aud := audienceFromClaim(claims.Audience)
-	if aud == "" {
-		return "", gerrors.Errorf("unrecognized token audience: %s", claims.Audience)
-	}
-	if serr := s.store.Save(ctx, string(aud), token); serr != nil {
-		return "", serr
-	}
-	return string(aud), nil
 }
 
 // helperPath locates the tock-teams-auth binary. In a packaged .app it lives
@@ -146,7 +141,6 @@ func helperPath() (string, error) {
 		filepath.Join(filepath.Dir(self), name), // .app/Contents/MacOS/<binary>
 	}
 	if cwd, cerr := os.Getwd(); cerr == nil {
-		// Walk up from cwd looking for go.mod; check bin/ at each level.
 		dir := cwd
 		for range 6 {
 			candidates = append(candidates, filepath.Join(dir, "bin", name))
@@ -169,9 +163,9 @@ func helperPath() (string, error) {
 	return "", gerrors.Errorf("tock-teams-auth helper not found; run `make teams-auth-build` (looked in %v)", candidates)
 }
 
-func runHelper(ctx context.Context, bin string, aud Audience, tenant string) (string, error) {
+func runHelper(ctx context.Context, bin, authURL string) (string, error) {
 	// bin is resolved by helperPath() from a fixed search list, not user input.
-	cmd := exec.CommandContext(ctx, bin, string(aud), tenant) //nolint:gosec // G204
+	cmd := exec.CommandContext(ctx, bin, authURL) //nolint:gosec // G204
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -240,8 +234,8 @@ func (s *Service) SetTrackedProjects(projects []string) error {
 
 // PushActivityStatus is called by the desktop app on every Start/Stop. It's a
 // no-op unless the integration is enabled, the project is in the allowlist,
-// and we have a working Skype token. On Stop (empty description), the note is
-// cleared.
+// and we have a working presence token. On Stop (empty description), the note
+// is cleared.
 //
 // Errors are returned so callers can decide whether to surface them; the
 // activity transition itself must not be blocked on this side effect.
@@ -256,7 +250,7 @@ func (s *Service) PushActivityStatus(ctx context.Context, description, project s
 	if !slices.Contains(tracked, project) {
 		return nil
 	}
-	tok, err := s.store.Load(ctx, string(AudiencePresence))
+	accessToken, err := s.accessToken(ctx)
 	if err != nil {
 		if errors.Is(err, errNotFound) {
 			return nil
@@ -264,16 +258,62 @@ func (s *Service) PushActivityStatus(ctx context.Context, description, project s
 		return err
 	}
 	if description == "" {
-		return s.http.ClearNote(ctx, tok)
+		return s.http.ClearNote(ctx, accessToken)
 	}
-	// Set a generous expiry; Teams will auto-clear it tomorrow if Toki
-	// crashes mid-session.
-	return s.http.PublishNote(ctx, tok, description, time.Now().Add(24*time.Hour))
+	// Generous expiry; Teams will auto-clear it tomorrow if Toki crashes
+	// mid-session.
+	return s.http.PublishNote(ctx, accessToken, description, time.Now().Add(24*time.Hour))
 }
 
-func audienceFromClaim(aud string) Audience {
-	if aud == presenceResource {
-		return AudiencePresence
+// accessToken returns a live access token, refreshing via the stored refresh
+// token if the cached one is expired (or within 60s of expiry). Serialized so
+// two concurrent pushes don't burn two refresh round-trips.
+func (s *Service) accessToken(ctx context.Context) (string, error) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+
+	tok, err := s.loadTokens(ctx)
+	if err != nil {
+		return "", err
 	}
-	return ""
+	if tok.ExpiresAt > time.Now().Add(60*time.Second).Unix() {
+		return tok.AccessToken, nil
+	}
+	if tok.RefreshToken == "" {
+		return "", gerrors.New("access token expired and no refresh token available — reconnect required")
+	}
+	tenant := "common"
+	if claims, derr := decodeClaims(tok.AccessToken); derr == nil && claims.TenantID != "" {
+		tenant = claims.TenantID
+	}
+	next, err := RefreshTokens(ctx, s.tokenHTTP, tenant, tok.RefreshToken, AudiencePresence)
+	if err != nil {
+		return "", gerrors.Wrap(err, "refresh tokens")
+	}
+	if err := s.saveTokens(ctx, next); err != nil {
+		return "", gerrors.Wrap(err, "persist refreshed tokens")
+	}
+	return next.AccessToken, nil
+}
+
+func (s *Service) loadTokens(ctx context.Context) (TokenSet, error) {
+	raw, err := s.store.Load(ctx, string(AudiencePresence))
+	if err != nil {
+		return TokenSet{}, err
+	}
+	var tok TokenSet
+	if err := json.Unmarshal([]byte(raw), &tok); err != nil {
+		// Pre-PKCE installs stored the raw access token. Treat that as "no
+		// tokens" so the UI prompts a reconnect.
+		return TokenSet{}, errNotFound
+	}
+	return tok, nil
+}
+
+func (s *Service) saveTokens(ctx context.Context, tok TokenSet) error {
+	data, err := json.Marshal(tok)
+	if err != nil {
+		return err
+	}
+	return s.store.Save(ctx, string(AudiencePresence), string(data))
 }

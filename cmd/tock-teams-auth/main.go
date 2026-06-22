@@ -7,15 +7,16 @@
 // macOS run-loop in its own process so it doesn't fight with Wails' webview,
 // prints the captured redirect URL to stdout, and exits.
 //
-// Usage: tock-teams-auth <audience> <tenantID>
+// Usage: tock-teams-auth <auth-url>
 //
-//   audience  one of: teams, skype, chatsvcagg
-//   tenantID  Azure tenant ID, or "common" if not yet known
+//	auth-url  the full Microsoft authorize URL the parent has built (with
+//	          PKCE challenge, state, etc. already baked in)
 //
 // Exit codes:
-//   0 success — captured URL printed to stdout
-//   1 invocation error (bad args, build URL failed)
-//   2 user closed the window before completing sign-in
+//
+//	0 success — captured redirect URL printed to stdout
+//	1 invocation error (bad args)
+//	2 user closed the window before completing sign-in
 package main
 
 import (
@@ -25,25 +26,16 @@ import (
 	"sync"
 
 	webview "github.com/webview/webview_go"
-
-	"github.com/kriuchkov/tock/internal/integrations/teams"
 )
 
 const redirectPrefix = "https://teams.microsoft.com/go"
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: tock-teams-auth <audience> <tenantID>")
+	if len(os.Args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: tock-teams-auth <auth-url>")
 		os.Exit(1)
 	}
-	aud := teams.Audience(os.Args[1])
-	tenant := os.Args[2]
-
-	loginURL, err := teams.LoginURL(aud, tenant)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "build login url: %v\n", err)
-		os.Exit(1)
-	}
+	loginURL := os.Args[1]
 
 	w := webview.New(false)
 	defer w.Destroy()
@@ -69,12 +61,12 @@ func main() {
 		if !strings.HasPrefix(url, redirectPrefix) {
 			return
 		}
-		// A fragment-less landing on teams.microsoft.com/go means MS bounced
-		// us without issuing a token — surface that as an explicit failure
-		// rather than a silent close so the caller doesn't think the user
-		// cancelled.
-		if !strings.Contains(url, "#") {
-			fmt.Fprintln(os.Stderr, "auth completed without a token (no URL fragment) — MS likely rejected the request")
+		// A bare landing on teams.microsoft.com/go with no query AND no
+		// fragment means MS bounced us without issuing anything — surface
+		// that as an explicit failure rather than a silent close so the
+		// caller doesn't think the user cancelled.
+		if !strings.ContainsAny(url, "?#") {
+			fmt.Fprintln(os.Stderr, "auth completed with no code or error in URL — MS likely rejected the request")
 			w.Terminate()
 			return
 		}
