@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,12 @@ import (
 
 	gerrors "github.com/go-faster/errors"
 )
+
+// ErrInteractionRequired means we cannot get a working access token without
+// showing the user a real sign-in window. Returned when both the refresh
+// token and the silent (prompt=none) WKWebView paths fail. Callers should
+// either trigger Connect or surface a "reconnect" affordance to the user.
+var ErrInteractionRequired = errors.New("teams: interactive sign-in required")
 
 // Service is the public surface used by the desktop app. It owns the keychain
 // store, the HTTP clients, and the cached in-memory settings. All methods are
@@ -309,7 +316,7 @@ func (s *Service) accessToken(ctx context.Context) (string, error) {
 	}
 	next, err := s.silentReauth(ctx, tenant)
 	if err != nil {
-		return "", gerrors.Wrap(err, "silent reauth (reconnect required)")
+		return "", fmt.Errorf("%w: %v", ErrInteractionRequired, err)
 	}
 	if err := s.saveTokens(ctx, next); err != nil {
 		return "", gerrors.Wrap(err, "persist reauthed tokens")
@@ -319,7 +326,8 @@ func (s *Service) accessToken(ctx context.Context) (string, error) {
 
 // silentReauth runs the auth helper with prompt=none in a hidden window and
 // exchanges the resulting code for fresh tokens. Returns an error if AAD
-// requires interaction (in which case the user has to click Connect again).
+// requires interaction; accessToken converts that into ErrInteractionRequired
+// so the desktop layer can pop the real sign-in window.
 func (s *Service) silentReauth(ctx context.Context, tenant string) (TokenSet, error) {
 	helper, err := helperPath()
 	if err != nil {

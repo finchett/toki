@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/systray"
@@ -32,6 +34,8 @@ type App struct {
 
 	mu       sync.Mutex
 	trayStop chan struct{}
+
+	teamsReconnecting atomic.Bool
 }
 
 func NewApp() *App {
@@ -511,6 +515,11 @@ func (a *App) TeamsDisconnect() error {
 // We never block the user's Start/Stop on a network call, and we never
 // surface a Teams failure as a Start/Stop failure — the time log is the
 // source of truth, the integration is decoration.
+//
+// If silent re-auth has failed (refresh + prompt=none both dead), we pop the
+// real sign-in window automatically rather than asking the user to navigate
+// to Settings → Teams → Connect. Guarded against duplicate windows when
+// pushes overlap.
 func (a *App) pushTeamsStatus(description, project string) {
 	if a.teams == nil {
 		return
@@ -518,12 +527,40 @@ func (a *App) pushTeamsStatus(description, project string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := a.teams.PushActivityStatus(ctx, description, project); err != nil {
-			// Toast on the main window so the user sees Teams problems but
-			// doesn't conflate them with tracking problems.
-			wailsruntime.EventsEmit(a.ctx, "teams:error", err.Error())
+		err := a.teams.PushActivityStatus(ctx, description, project)
+		if err == nil {
+			return
 		}
+		if stderrors.Is(err, teams.ErrInteractionRequired) {
+			go a.reconnectAndRetry(description, project)
+			return
+		}
+		// Toast on the main window so the user sees Teams problems but
+		// doesn't conflate them with tracking problems.
+		wailsruntime.EventsEmit(a.ctx, "teams:error", err.Error())
 	}()
+}
+
+// reconnectAndRetry pops the interactive sign-in window and, on success,
+// retries the status push that triggered it. The atomic guard prevents
+// stacked Start/Stop events from spawning multiple WKWebView windows.
+func (a *App) reconnectAndRetry(description, project string) {
+	if !a.teamsReconnecting.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.teamsReconnecting.Store(false)
+
+	connectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := a.teams.Connect(connectCtx); err != nil {
+		wailsruntime.EventsEmit(a.ctx, "teams:error", err.Error())
+		return
+	}
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pushCancel()
+	if err := a.teams.PushActivityStatus(pushCtx, description, project); err != nil {
+		wailsruntime.EventsEmit(a.ctx, "teams:error", err.Error())
+	}
 }
 
 // Projects returns distinct project names seen recently — feeds the small-caps
