@@ -52,6 +52,30 @@ jobs:
           fi
           ls -la
 
+      - name: Install license-gathering tools
+        run: |
+          go install github.com/google/go-licenses@latest
+          npm install -g license-checker-rseidelsohn
+          # jq is preinstalled on macos-latest runners.
+
+      - name: Generate THIRD_PARTY_NOTICES.txt
+        run: ./scripts/gen-notices.sh "$PWD/THIRD_PARTY_NOTICES.txt"
+
+      - name: Bundle license texts into Toki.app
+        run: |
+          RES="cmd/tock-desktop/build/bin/Toki.app/Contents/Resources"
+          mkdir -p "$RES"
+          cp LICENSE "$RES/LICENSE"
+          cp THIRD_PARTY_NOTICES.txt "$RES/THIRD_PARTY_NOTICES.txt"
+          # Geist is the only bundled font; ship its OFL alongside.
+          GEIST_LICENSE="cmd/tock-desktop/frontend/node_modules/@fontsource-variable/geist/LICENSE"
+          if [ -f "$GEIST_LICENSE" ]; then
+            cp "$GEIST_LICENSE" "$RES/Geist-OFL.txt"
+          else
+            echo "Geist license not found at $GEIST_LICENSE" >&2
+            exit 1
+          fi
+
       - name: Zip Toki.app
         run: |
           cd cmd/tock-desktop/build/bin
@@ -72,6 +96,7 @@ jobs:
           files: |
             cmd/tock-desktop/build/bin/Toki-${{ github.ref_name }}-macos-universal.zip
             cmd/tock-desktop/build/bin/Toki-${{ github.ref_name }}-macos-universal.zip.sha256
+            THIRD_PARTY_NOTICES.txt
           body: |
             ## Install
 

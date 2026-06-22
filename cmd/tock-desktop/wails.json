@@ -14,7 +14,7 @@
     "productName": "Toki",
     "productVersion": "0.1.0",
     "companyName": "Toki",
-    "copyright": "Copyright © 2026 Sam Finchett",
+    "copyright": "Toki © 2026 Sam Finchett. Based on tock © Vladimir Kriuchkov. GPL-3.0-or-later. Bundles Geist (OFL-1.1) and other third-party software; see Resources/THIRD_PARTY_NOTICES.txt.",
     "comments": "A calm time tracker."
   }
 }

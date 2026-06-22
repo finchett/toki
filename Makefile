@@ -57,4 +57,9 @@ desktop-dev:
 desktop-doctor:
 	cd $(DESKTOP_DIR) && $(WAILS) doctor
 
-.PHONY: desktop-build desktop-build-universal desktop-run desktop-dev desktop-doctor
+# Regenerate THIRD_PARTY_NOTICES.txt for bundled Go and npm deps.
+# Requires go-licenses, license-checker-rseidelsohn, and jq on PATH.
+notices:
+	./scripts/gen-notices.sh
+
+.PHONY: desktop-build desktop-build-universal desktop-run desktop-dev desktop-doctor notices
