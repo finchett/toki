@@ -62,7 +62,19 @@ open cmd/tock-desktop/build/bin/Toki.app
 
 ## What it looks like
 
-<!-- Add a screenshot or short clip here once one is ready -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="screenshots/Now-Dark.png" />
+    <img src="screenshots/Now-Light.png" alt="Toki — tracking an activity" width="720" />
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="screenshots/History-Dark.png" />
+    <img src="screenshots/History-Light.png" alt="Toki — activity history" width="720" />
+  </picture>
+</p>
 
 The menu bar shows `● 0:42` while tracking, `○` when idle. The window has a
 single input for what you're working on, a list of today's activities (and any
@@ -94,6 +106,13 @@ A few things to know:
   — sign-in won't complete otherwise.
 - Toki only ever writes your status message. It does not read your Teams
   messages, send messages, or access any other Teams data.
+
+## Export
+
+From the menu in the top-right of the window, you can export your activity log
+as **CSV**, **JSON**, or plain **TXT**. You can scope the export to a date
+range and an optional project. The resulting file is saved wherever you like —
+handy for invoicing, reporting, or piping into a spreadsheet.
 
 ## Data and configuration
 
